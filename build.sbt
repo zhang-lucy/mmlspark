@@ -23,6 +23,7 @@ libraryDependencies ++= Seq(
   "org.openpnp" % "opencv" % "3.2.0-1",
   "com.jcraft" % "jsch" % "0.1.54",
   "com.jcraft" % "jsch" % "0.1.54",
+  "com.microsoft.cognitiveservices.speech" % "client-sdk" % "1.8.0",
   "org.apache.httpcomponents" % "httpclient" % "4.5.6",
   "com.microsoft.ml.lightgbm" % "lightgbmlib" % "2.3.150",
   "com.github.vowpalwabbit" %  "vw-jni" % "8.7.0.3"

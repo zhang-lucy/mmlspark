@@ -14,6 +14,7 @@ case class DetailedSpeechResponse(Confidence: Double,
 case class SpeechResponse(RecognitionStatus: String,
                           Offset: Int,
                           Duration: Int,
+                          Id: Option[String],
                           DisplayText: Option[String],
                           NBest: Option[Seq[DetailedSpeechResponse]]
                           )

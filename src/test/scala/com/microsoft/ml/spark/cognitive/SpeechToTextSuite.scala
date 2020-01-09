@@ -70,6 +70,7 @@ class SpeechToTextSuite extends TransformerFuzzing[SpeechToText]
 
   test("Detailed Usage") {
     val toObj = SpeechResponse.makeFromRowConverter
+    println(stt.transform(df).printSchema())
     val result = toObj(stt.setFormat("detailed")
       .transform(df).select("text")
       .collect().head.getStruct(0))

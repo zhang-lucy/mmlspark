@@ -16,12 +16,12 @@ import com.microsoft.ml.spark.core.contracts.HasOutputCol
 import com.microsoft.ml.spark.core.schema.DatasetExtensions
 import com.microsoft.ml.spark.io.http.HasURL
 import org.apache.commons.compress.utils.IOUtils
-import org.apache.spark.ml.{ComplexParamsReadable, ComplexParamsWritable, Transformer}
 import org.apache.spark.ml.param.{ParamMap, ServiceParam, ServiceParamData}
 import org.apache.spark.ml.util._
+import org.apache.spark.ml.{ComplexParamsReadable, ComplexParamsWritable, Transformer}
 import org.apache.spark.sql.functions._
 import org.apache.spark.sql.types._
-import org.apache.spark.sql.{DataFrame, Dataset, Row}
+import org.apache.spark.sql.{DataFrame, Dataset, Row, SparkSession}
 import spray.json.DefaultJsonProtocol._
 
 import scala.concurrent.duration.Duration
@@ -115,11 +115,12 @@ class SpeechToTextSDK(override val uid: String) extends Transformer
                        uri: URI,
                        language: String,
                        profanity: String,
-                       format: String): String = {
+                       format: String): Array[SpeechResponse] = {
     val config: SpeechConfig = SpeechConfig.fromEndpoint(uri, speechKey)
     assert(config != null)
-    config.setProperty("profanity", profanity)
+    config.setProperty(PropertyId.SpeechServiceResponse_ProfanityOption, profanity)
     config.setSpeechRecognitionLanguage(language)
+    config.setProperty(PropertyId.SpeechServiceResponse_OutputFormatOption, format)
 
     val inputStream: InputStream = new ByteArrayInputStream(bytes)
     val pushStream: PushAudioInputStream = AudioInputStream.createPushStream
@@ -130,17 +131,20 @@ class SpeechToTextSDK(override val uid: String) extends Transformer
     connection.setMessageProperty("speech.config", "application",
       s"""{"name":"mmlspark", "version": "${BuildInfo.version}"}""")
 
-    val resultPromise = Promise[String]()
-    val stringBuffer = Collections.synchronizedList(new util.ArrayList[String])
+  val toObj: Row => SpeechResponse = SpeechResponse.makeFromRowConverter
+    val jsons = Collections.synchronizedList(new util.ArrayList[String])
+    val resultPromise = Promise[Array[String]]()
 
     def recognizedHandler(s: Any, e: SpeechRecognitionEventArgs): Unit = {
       if (e.getResult.getReason eq ResultReason.RecognizedSpeech) {
-        stringBuffer.add(e.getResult.getText)
+        val jsonString = e.getResult.getProperties.getProperty(PropertyId.SpeechServiceResponse_JsonResult)
+        println(s"JSON: $jsonString")
+        jsons.add(jsonString)
       }
     }
 
     def sessionStoppedHandler(s: Any, e: SessionEventArgs): Unit = {
-      resultPromise.complete(Try(stringBuffer.toArray.mkString(" ")))
+      resultPromise.complete(Try(jsons.toArray.map(_.asInstanceOf[String])))
     }
 
     recognizer.recognized.addEventListener(makeEventHandler[SpeechRecognitionEventArgs](recognizedHandler))
@@ -152,19 +156,30 @@ class SpeechToTextSDK(override val uid: String) extends Transformer
     pushStream.close()
     inputStream.close()
 
-    val result: String = Await.result(resultPromise.future, Duration.Inf)
+    val result: Array[String] = Await.result(resultPromise.future, Duration.Inf)
 
     recognizer.stopContinuousRecognitionAsync.get()
     config.close()
     audioInput.close()
-    result
+    val jsize = jsons.size
+    println(s"JSONS: $jsons")
+    println(s"SIZE OF JSONS: $jsize")
+
+    val sparkSession  = SparkSession
+      .builder()
+      .appName("Spark SQL basic example")
+      .config("spark.master", "local")
+      .getOrCreate();
+
+    println(result.map(jsonString => sparkSession.read.json(jsonString)))
+    result.map(jsonString => toObj(sparkSession.read.json(jsonString).first))
   }
 
   def wavToBytes(filepath: String): Array[Byte] = {
     IOUtils.toByteArray(new FileInputStream(filepath))
   }
 
-  protected def inputFunc(schema: StructType): Row => Option[String] = {
+  protected def inputFunc(schema: StructType): Row => Option[Array[SpeechResponse]] = {
     { row: Row =>
       if (shouldSkip(row)) {
         None
@@ -183,6 +198,7 @@ class SpeechToTextSDK(override val uid: String) extends Transformer
   override def transform(dataset: Dataset[_]): DataFrame = {
     val df = dataset.toDF
     val schema = dataset.schema
+
     val dynamicParamColName = DatasetExtensions.findUnusedColumnName("dynamic", dataset)
     val badColumns = getVectorParamMap.values.toSet.diff(schema.fieldNames.toSet)
 
@@ -194,14 +210,16 @@ class SpeechToTextSDK(override val uid: String) extends Transformer
       case l => l
     }
      df.withColumn(dynamicParamColName, struct(dynamicParamCols: _*))
-      .withColumn(getOutputCol, udf(inputFunc(schema), StringType)(col(dynamicParamColName)))
+      .withColumn(
+        getOutputCol,
+        udf(inputFunc(schema), ArrayType(SpeechResponse.schema))(col(dynamicParamColName)))
       .drop(dynamicParamColName)
   }
 
   override def copy(extra: ParamMap): Transformer = defaultCopy(extra)
 
   override def transformSchema(schema: StructType): StructType = {
-    schema.add("text", StringType)
+    schema.add(getOutputCol, SpeechResponse.schema)
   }
 
 }
