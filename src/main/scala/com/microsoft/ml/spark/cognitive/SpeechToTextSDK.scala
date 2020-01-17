@@ -9,7 +9,7 @@ import java.util
 import java.util.Collections
 
 import com.microsoft.cognitiveservices.speech._
-import com.microsoft.cognitiveservices.speech.audio.{AudioConfig, AudioInputStream, PushAudioInputStream}
+import com.microsoft.cognitiveservices.speech.audio.{AudioConfig, AudioInputStream, AudioStreamFormat, PushAudioInputStream}
 import com.microsoft.cognitiveservices.speech.util.EventHandler
 import com.microsoft.ml.spark.build.BuildInfo
 import com.microsoft.ml.spark.cognitive.SpeechFormat._
@@ -110,8 +110,7 @@ class SpeechToTextSDK(override val uid: String) extends Transformer
   }
 
   /** @return text transcription of the audio */
-  def audioBytesToText(sparkSession: SparkSession,
-                       bytes: Array[Byte],
+  def audioBytesToText(bytes: Array[Byte],
                        speechKey: String,
                        uri: URI,
                        language: String,
@@ -123,8 +122,9 @@ class SpeechToTextSDK(override val uid: String) extends Transformer
     config.setSpeechRecognitionLanguage(language)
     config.setProperty(PropertyId.SpeechServiceResponse_OutputFormatOption, format)
 
+    val audioFormat = AudioStreamFormat.getWaveFormatPCM(16000, 16, 8)
     val inputStream: InputStream = new ByteArrayInputStream(bytes)
-    val pushStream: PushAudioInputStream = AudioInputStream.createPushStream
+    val pushStream: PushAudioInputStream = AudioInputStream.createPushStream(audioFormat)
     val audioInput: AudioConfig = AudioConfig.fromStreamInput(pushStream)
 
     val recognizer = new SpeechRecognizer(config, audioInput)
@@ -138,12 +138,14 @@ class SpeechToTextSDK(override val uid: String) extends Transformer
     def recognizedHandler(s: Any, e: SpeechRecognitionEventArgs): Unit = {
       if (e.getResult.getReason eq ResultReason.RecognizedSpeech) {
         val jsonString = e.getResult.getProperties.getProperty(PropertyId.SpeechServiceResponse_JsonResult)
+        println(jsonString)
         jsons.add(jsonString)
       }
     }
 
     def sessionStoppedHandler(s: Any, e: SessionEventArgs): Unit = {
       resultPromise.complete(Try(jsons.toArray.map(_.asInstanceOf[String])))
+      println()
     }
 
     recognizer.recognized.addEventListener(makeEventHandler[SpeechRecognitionEventArgs](recognizedHandler))
@@ -170,13 +172,12 @@ class SpeechToTextSDK(override val uid: String) extends Transformer
     IOUtils.toByteArray(new FileInputStream(filepath))
   }
 
-  protected def inputFunc(schema: StructType, sparkSession: SparkSession): Row => Option[Array[SpeechResponse]] = {
+  protected def inputFunc(schema: StructType): Row => Option[Array[SpeechResponse]] = {
     { row: Row =>
       if (shouldSkip(row)) {
         None
       } else {
         Some(audioBytesToText(
-          sparkSession,
           getValue(row, audioData),
           getValue(row, subscriptionKey),
           new URI(getUrl),
@@ -190,7 +191,6 @@ class SpeechToTextSDK(override val uid: String) extends Transformer
   override def transform(dataset: Dataset[_]): DataFrame = {
     val df = dataset.toDF
     val schema = dataset.schema
-    val sparkSession: SparkSession = df.sparkSession
 
     val dynamicParamColName = DatasetExtensions.findUnusedColumnName("dynamic", dataset)
     val badColumns = getVectorParamMap.values.toSet.diff(schema.fieldNames.toSet)
@@ -206,7 +206,7 @@ class SpeechToTextSDK(override val uid: String) extends Transformer
 
       .withColumn(
         getOutputCol,
-        udf(inputFunc(schema, sparkSession), ArrayType(SpeechResponse.schema))(col(dynamicParamColName)))
+        udf(inputFunc(schema), ArrayType(SpeechResponse.schema))(col(dynamicParamColName)))
       .drop(dynamicParamColName)
   }
 

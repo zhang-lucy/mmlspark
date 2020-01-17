@@ -11,7 +11,7 @@ today = date.today()
 location = "MA"
 results_directory = "results/text_analytics_" + location.lower()
 imgs_directory = "imgs"
-num_trials = 150
+num_trials = 500
 
 def getMeans():
 	container_means = []

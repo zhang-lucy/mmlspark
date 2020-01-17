@@ -3,7 +3,7 @@
 
 package com.microsoft.ml.spark.cognitive
 
-import java.io.{FileInputStream, FileNotFoundException}
+import java.io.{File, FileInputStream, FileNotFoundException}
 import java.net.URI
 
 import com.microsoft.ml.spark.core.test.fuzzing.{TestObject, TransformerFuzzing}
@@ -13,6 +13,8 @@ import org.apache.spark.ml.util.MLReadable
 import org.apache.spark.sql.{Column, DataFrame, Row}
 import org.scalactic.Equality
 import org.scalatest.Assertion
+import org.apache.spark.sql.functions._
+import org.apache.spark.sql.types.StringType
 
 class SpeechToTextSDKSuite extends TransformerFuzzing[SpeechToTextSDK]
   with SpeechKey {
@@ -22,7 +24,7 @@ class SpeechToTextSDKSuite extends TransformerFuzzing[SpeechToTextSDK]
   val resourcesDir = System.getProperty("user.dir") + "/src/test/resources/"
   val uri = new URI(s"https://$region.api.cognitive.microsoft.com/sts/v1.0/issuetoken")
   val language = "en-us"
-  val profanity = "masked"
+  val profanity = "raw"
   val format = "simple"
 
   val threshold = 0.9
@@ -79,7 +81,7 @@ class SpeechToTextSDKSuite extends TransformerFuzzing[SpeechToTextSDK]
     val expected = try expectedFile.mkString finally expectedFile.close()
     val bytes = IOUtils.toByteArray(new FileInputStream(audioFilePath))
 
-    val resultArray = sdk.audioBytesToText(audioDfs(0).sparkSession, bytes, speechKey, uri, language, profanity, format)
+    val resultArray = sdk.audioBytesToText(bytes, speechKey, uri, language, profanity, format)
     val result = speechArrayToText(resultArray)
     if(format == "simple") {
       resultArray.foreach{rp =>
@@ -180,6 +182,45 @@ class SpeechToTextSDKSuite extends TransformerFuzzing[SpeechToTextSDK]
 
   test("Serialization Fuzzing 2"){
     testSerialization()
+  }
+
+  test("sanity"){
+    val audioFilePath = resourcesDir + "watkinsglen_2019_small/SCANNER_88.wav"
+    val bytes: Array[Byte] = IOUtils.toByteArray(new FileInputStream(audioFilePath))
+
+    val resultArray = sdk.audioBytesToText(bytes, speechKey, uri, language, profanity, format)
+    val result = speechArrayToText(resultArray)
+  }
+
+  test("sanity2"){
+    val audioFilePath = resourcesDir + "audio2.wav"
+    val bytes = IOUtils.toByteArray(new FileInputStream(audioFilePath))
+
+    val resultArray = sdk.audioBytesToText(bytes, speechKey, uri, language, profanity, format)
+    val result = speechArrayToText(resultArray)
+
+  }
+
+  test("HMS"){
+    val df =  new File(resourcesDir + "watkinsglen_2019_small")
+      .listFiles().toSeq
+      .map(af =>  (IOUtils.toByteArray(new FileInputStream(af)), af.getName))
+      .toDF("bytes", "file")
+    val results = sdk.setFormat("detailed")
+      .setAudioDataCol("bytes")
+      .setOutputCol("stt_result")
+      .transform(df)
+      .withColumn("searchAction", lit("upload"))
+      .withColumn("id", monotonically_increasing_id().cast(StringType))
+      .drop("bytes")
+    AzureSearchWriter.write(results, Map(
+      "subscriptionKey" -> "F3CBA403759A61ACFDD464A84293F23D",
+      "actionCol" -> "searchAction",
+      "serviceName" -> "extern-search",
+      "filterNulls" -> "true",
+      "indexName" -> "hms2",
+      "keyCol" -> "id"
+    ))
   }
 
   override def testObjects(): Seq[TestObject[SpeechToTextSDK]] =
